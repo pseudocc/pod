@@ -1,0 +1,14 @@
+.{
+    .name = .pod,
+    .version = "1.0.0",
+    .fingerprint = 0x30a636b5ac0c3a8,
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{ },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "pod.zig",
+        "LICENSE",
+        "README.md",
+    },
+}
