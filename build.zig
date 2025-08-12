@@ -1,17 +1,21 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    _ = b.addModule("pod", .{
+        .root_source_file = b.path("pod.zig"),
+    });
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("pod", .{
+    const mod_native = b.createModule(.{
         .root_source_file = b.path("pod.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const unit_tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = mod_native,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
