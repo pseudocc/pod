@@ -5,30 +5,100 @@ const log = std.log.scoped(.pod);
 const asBytes = std.mem.asBytes;
 const Allocator = std.mem.Allocator;
 
-pub const VERSION = 1;
+pub const VERSION = 2;
+pub const Blake2 = std.crypto.hash.blake2.Blake2s;
 
-const Magic = packed struct(u32) {
-    little_endian: bool = builtin.cpu.arch.endian() == .little,
-    version: u7 = VERSION,
-    hash: u24,
+const Magic = packed struct(u128) {
+    little_endian: bool,
+    version: u7,
+    hash: u120,
+
+    const Hasher = Blake2(128);
 
     fn init(comptime T: type) Magic {
-        const string = std.fmt.comptimePrint("{any}", .{@typeInfo(T)});
+        comptime {
+            var self: Magic = undefined;
+            if (@hasDecl(T, "POD_MAGIC")) {
+                self.hash = @field(T, "POD_MAGIC");
+            } else {
+                var hasher = Hasher.init(.{});
+                update(&hasher, T);
+                hasher.final(asBytes(&self));
+            }
 
-        var u: u64 = 0;
-        var m: u64 = 0;
-        var l: u64 = 0;
-
-        for (string, 1..) |c, i| {
-            u += c + 0x11;
-            m += (c * i + 0xcc) & 0xff;
-            l += m & 0x1c + i;
+            self.little_endian = builtin.cpu.arch.endian() == .little;
+            self.version = VERSION;
+            return self;
         }
+    }
 
-        return .{ .hash
-            = @as(u24, @intCast(u & 0xff)) << 16
-            | @as(u24, @intCast(m & 0xff)) << 8
-            | @as(u24, @intCast(l & 0xff))
+    fn update(hasher: *Hasher, comptime T: type) void {
+        comptime switch (@typeInfo(T)) {
+            .@"struct" => |info| {
+                hasher.update("struct");
+                hasher.update(@tagName(info.layout));
+                if (info.backing_integer) |Int| {
+                    const bits: u8 = @bitSizeOf(Int);
+                    hasher.update(asBytes(&bits));
+                }
+                for (info.fields) |f| {
+                    hasher.update(f.name);
+                    update(hasher, f.type);
+                }
+            },
+            .@"union" => |info| {
+                hasher.update("union");
+                hasher.update(@tagName(info.layout));
+                if (info.tag_type) |Tag| {
+                    update(hasher, Tag);
+                }
+                for (info.fields) |f| {
+                    hasher.update(f.name);
+                    update(hasher, f.type);
+                }
+            },
+            .@"enum" => |info| {
+                hasher.update("enum");
+                if (info.is_exhaustive)
+                    hasher.update("exhaustive");
+                for (info.fields) |f| {
+                    hasher.update(f.name);
+                }
+            },
+            .optional => |info| {
+                hasher.update("?");
+                update(hasher, info.child);
+            },
+            .pointer => |info| {
+                const prefix = switch (info.size) {
+                    .c => "[*c]",
+                    .one => "*",
+                    else => std.fmt.comptimePrint("[{s}{s}]", .{
+                        if (info.size == .many) "*" else "",
+                        if (info.sentinel()) |_| ":any" else "",
+                    }),
+                };
+                hasher.update(prefix);
+
+                if (info.is_allowzero)
+                    hasher.update("allowzero");
+                if (info.is_const)
+                    hasher.update("const");
+                if (info.is_volatile)
+                    hasher.update("volatile");
+                update(hasher, info.child);
+            },
+            .array => |info| {
+                const prefix = std.fmt.comptimePrint("[{d}]", .{info.len});
+                hasher.update(prefix);
+                update(hasher, info.child);
+            },
+            .vector => |info| {
+                const prefix = std.fmt.comptimePrint("<{d}>", .{info.len});
+                hasher.update(prefix);
+                update(hasher, info.child);
+            },
+            else => hasher.update(@typeName(T)),
         };
     }
 };
@@ -354,7 +424,7 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
 /// The caller owns the data and *must ensure* it is valid for
 /// the lifetime of the returned value.
 pub fn unseal(comptime T: type, data: []align(ALIGNMENT) u8) !T {
-    const magic_baseline = Magic.init(T);
+    const magic_baseline = comptime Magic.init(T);
     const magic: Magic = z: {
         const offset = @offsetOf(Pod(T), "magic");
         const ptr: *const Magic = @alignCast(@ptrCast(&data[offset]));
@@ -364,7 +434,7 @@ pub fn unseal(comptime T: type, data: []align(ALIGNMENT) u8) !T {
             break :z native_value;
         }
 
-        const backing: u32 = @bitCast(native_value);
+        const backing: u128 = @bitCast(native_value);
         const bs_value: Magic = @bitCast(@byteSwap(backing));
         if (bs_value.hash == magic_baseline.hash and bs_value.little_endian != magic_baseline.little_endian)
             break :z bs_value;
@@ -409,10 +479,13 @@ const T0 = struct {
 const T1 = union(enum) {
     number: u32,
     u8_slice: []const u8,
+
+    pub const POD_MAGIC = 0x1234567890abcde;
 };
 
 test {
     const allocator = std.testing.allocator;
+    std.testing.log_level = .debug;
 
     {
         var c: u8 = 119;
