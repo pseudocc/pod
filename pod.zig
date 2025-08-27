@@ -473,6 +473,7 @@ const T0 = struct {
     u8_slice: []const u8 = bytes[0..2],
     u8_slicez: [:0]const u8 = bytes[2..5:0],
     u8_ptrz: [*:0]const u8 = bytes[2..5:0].ptr,
+    u32_array: [3]u32 = .{ 101, 102, 103 },
     s0p: *const S0,
 };
 
@@ -499,6 +500,7 @@ test {
         try std.testing.expectEqualStrings(_t0.u8_slice, t0.u8_slice);
         try std.testing.expectEqualStrings(_t0.u8_slicez, t0.u8_slicez);
         try std.testing.expectEqualStrings(std.mem.span(_t0.u8_ptrz), std.mem.span(t0.u8_ptrz));
+        try std.testing.expectEqualSlices(u32, &_t0.u32_array, &t0.u32_array);
         try std.testing.expectEqual(_t0.s0p.*.a, s0.a);
         try std.testing.expectEqual(_t0.s0p.*.b, s0.b);
         try std.testing.expectEqual(_t0.s0p.*.c.*, s0.c.*);
