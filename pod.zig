@@ -7,10 +7,10 @@ const Allocator = std.mem.Allocator;
 
 pub const VERSION = 2;
 pub const Blake2 = std.crypto.hash.blake2.Blake2s;
+const native_endion = builtin.cpu.arch.endian();
 
 const Magic = packed struct(u128) {
-    little_endian: bool,
-    version: u7,
+    version: u8,
     hash: u120,
 
     const Hasher = Blake2(128);
@@ -26,7 +26,6 @@ const Magic = packed struct(u128) {
                 hasher.final(asBytes(&self));
             }
 
-            self.little_endian = builtin.cpu.arch.endian() == .little;
             self.version = VERSION;
             return self;
         }
@@ -391,7 +390,11 @@ fn Context(comptime precompute: bool) type {
 /// Seal a value of type `T` into a `Pod(T)` of a compact binary buffer.
 /// The caller owns the returned data.
 pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT) u8 {
+    if (native_endion != .little)
+        @compileError("little-endian architectures are required");
+
     var used: usize = @sizeOf(Pod(T));
+    var used_aligned: usize = undefined;
     var resolved = Map.init(allocator);
     defer resolved.deinit();
 
@@ -406,8 +409,10 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
             used = @sizeOf(Pod(T));
         }
         try ctx.write(Pod(T), pod, &resolved);
+        used_aligned = std.mem.alignForward(usize, used, @alignOf(u32));
+        used = used_aligned + @sizeOf(u32);
         log.debug("seal.precompute: {d}", .{used});
-        const data = try allocator.allocWithOptions(u8, used, ALIGNMENT, null);
+        const data = try allocator.alignedAlloc(u8, ALIGNMENT, used);
         break :precompute data;
     };
 
@@ -415,8 +420,13 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
         .data = data,
         .used = &used,
     };
+
     // We've already allocated everything
     ctx.write(Pod(T), pod, &resolved) catch unreachable;
+    const checksum = std.hash.Crc32.hash(data[0..used_aligned]);
+    @memcpy(data[used_aligned..][0..@sizeOf(u32)], asBytes(&checksum));
+    log.debug("seal: checksum=0x{x}", .{checksum});
+
     return data;
 }
 
@@ -424,33 +434,47 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
 /// The caller owns the data and *must ensure* it is valid for
 /// the lifetime of the returned value.
 pub fn unseal(comptime T: type, data: []align(ALIGNMENT) u8) !T {
+    if (native_endion != .little)
+        @compileError("little-endian architectures are required");
+
+    if (data.len % @sizeOf(u32) != 0)
+        return error.InvalidSize;
+
+    const checksum = z: {
+        const computed_checksum = std.hash.Crc32.hash(data[0..data.len - @sizeOf(u32)]);
+        const stored_checksum = @as(*u32, @alignCast(@ptrCast(&data[data.len - @sizeOf(u32)]))).*;
+        if (computed_checksum != stored_checksum) {
+            @branchHint(.unlikely);
+            log.err(
+                \\unseal: checksum mismatch
+                \\  computed=0x{x}
+                \\  stored=0x{x}
+                , .{
+                    computed_checksum,
+                    stored_checksum,
+                },
+            );
+            return error.ChecksumMismatch;
+        }
+        break :z stored_checksum;
+    };
+    log.debug("unseal: checksum=0x{x}", .{checksum});
+
     const magic_baseline = comptime Magic.init(T);
     const magic: Magic = z: {
         const offset = @offsetOf(Pod(T), "magic");
         const ptr: *const Magic = @alignCast(@ptrCast(&data[offset]));
         const native_value = ptr.*;
-        if (native_value.hash == magic_baseline.hash and native_value.little_endian == magic_baseline.little_endian) {
+        if (native_value.hash == magic_baseline.hash) {
             @branchHint(.likely);
             break :z native_value;
         }
-
-        const backing: u128 = @bitCast(native_value);
-        const bs_value: Magic = @bitCast(@byteSwap(backing));
-        if (bs_value.hash == magic_baseline.hash and bs_value.little_endian != magic_baseline.little_endian)
-            break :z bs_value;
 
         return error.MagicMismatch;
     };
 
     if (magic.version != VERSION)
         return error.VersionMismatch;
-
-    if (magic.little_endian != magic_baseline.little_endian) {
-        @branchHint(.unlikely);
-        for (data) |*byte| {
-            byte.* = @byteSwap(byte.*);
-        }
-    }
 
     const ref: *Pod(T) = @ptrCast(data.ptr);
     const ctx = Context(false){
@@ -514,5 +538,12 @@ test {
 
         try std.testing.expect(_t1 == .u8_slice);
         try std.testing.expectEqualStrings(_t1.u8_slice, t1.u8_slice);
+    }
+
+    {
+        var t1_data: [56]u8 align(ALIGNMENT) = .{ 2, 222, 188, 10, 137, 103, 69, 35, 1, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 210, 5, 1, 0, 0, 0, 0, 0, 0, 144, 95, 94, 127, 0, 0, 45, 46, 47, 48, 34, 50, 101, 17 };
+        const _t1 = try unseal(T1, &t1_data);
+        try std.testing.expect(_t1 == .u8_slice);
+        try std.testing.expectEqualStrings(_t1.u8_slice, t1_data[t1_data.len - 8..][0..4]);
     }
 }
