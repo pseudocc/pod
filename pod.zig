@@ -137,7 +137,7 @@ fn Context(comptime precompute: bool) type {
 
         data:
             if (precompute) void
-            else []align(ALIGNMENT) u8,
+            else Bytes,
         used: *usize,
         offset: usize = 0,
 
@@ -387,9 +387,15 @@ fn Context(comptime precompute: bool) type {
     };
 }
 
+pub const Bytes = []align(ALIGNMENT) u8;
+
+pub fn alloc(allocator: Allocator, size: usize) !Bytes {
+    return allocator.alignedAlloc(u8, @enumFromInt(std.math.log2(ALIGNMENT)), size);
+}
+
 /// Seal a value of type `T` into a `Pod(T)` of a compact binary buffer.
 /// The caller owns the returned data.
-pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT) u8 {
+pub fn seal(comptime T: type, value: T, allocator: Allocator) !Bytes {
     if (native_endion != .little)
         @compileError("little-endian architectures are required");
 
@@ -412,7 +418,7 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
         used_aligned = std.mem.alignForward(usize, used, @alignOf(u32));
         used = used_aligned + @sizeOf(u32);
         log.debug("seal.precompute: {d}", .{used});
-        const data = try allocator.alignedAlloc(u8, ALIGNMENT, used);
+        const data = try alloc(allocator, used);
         break :precompute data;
     };
 
@@ -433,7 +439,7 @@ pub fn seal(comptime T: type, value: T, allocator: Allocator) ![]align(ALIGNMENT
 /// Unseal a sealed `Pod(T)` data back into the original type `T`.
 /// The caller owns the data and *must ensure* it is valid for
 /// the lifetime of the returned value.
-pub fn unseal(comptime T: type, data: []align(ALIGNMENT) u8) !T {
+pub fn unseal(comptime T: type, data: Bytes) !T {
     if (native_endion != .little)
         @compileError("little-endian architectures are required");
 

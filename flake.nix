@@ -2,7 +2,7 @@
   description = ": Zig development environment";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:pseudocc/nixpkgs/zig-0.15.1";
   };
 
   outputs = { self, nixpkgs }: import ./nix/each-system.nix nixpkgs (
